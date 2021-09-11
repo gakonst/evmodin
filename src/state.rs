@@ -63,10 +63,13 @@ pub struct ExecutionState {
     pub(crate) stack: Stack,
     #[getset(get = "pub", get_mut = "pub")]
     pub(crate) memory: Memory,
+    #[getset(get = "pub", get_mut = "pub")]
     pub(crate) message: Message,
+    #[getset(get = "pub", get_mut = "pub")]
     pub(crate) evm_revision: Revision,
     #[getset(get = "pub", get_mut = "pub")]
     pub(crate) return_data: Bytes,
+    #[getset(get = "pub", get_mut = "pub")]
     pub(crate) output_data: Bytes,
 }
 
