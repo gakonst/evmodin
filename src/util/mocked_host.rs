@@ -1,6 +1,7 @@
+use crate::tracing::NoopTracer;
 use crate::{host::*, *};
 use bytes::Bytes;
-use ethereum_types::{Address, H256, U256};
+use ethereum_types::{Address, H160, H256, U256};
 use hex_literal::hex;
 use parking_lot::Mutex;
 use std::{cmp::min, collections::HashMap};
@@ -141,7 +142,10 @@ impl crate::Host for MockedHost {
         value: H256,
     ) -> StorageStatus {
         self.recorded.lock().record_account_access(address);
-
+        println!(
+            "Set STORAGE CALLED: {:?} - key ... {:?} - value",
+            key, value
+        );
         // Get the reference to the old value.
         // This will create the account in case it was not present.
         // This is convenient for unit testing and standalone EVM execution to preserve the
@@ -158,6 +162,7 @@ impl crate::Host for MockedHost {
         // WARNING! This is not complete implementation as refund is not handled here.
 
         if old.value == value {
+            println!("OLD VAL == NEW VAL. NOT CHANGING");
             return StorageStatus::Unchanged;
         }
 
@@ -174,6 +179,10 @@ impl crate::Host for MockedHost {
             StorageStatus::ModifiedAgain
         };
 
+        println!(
+            "FOR ADDR: {:?}\nOLD VALUE: {:?}\nNEW VALUE: {:?}\n",
+            address, old.value, value
+        );
         old.value = value;
 
         status
@@ -242,17 +251,68 @@ impl crate::Host for MockedHost {
     }
 
     fn call(&mut self, msg: &Message) -> Output {
-        let mut r = self.recorded.lock();
+        let dest = msg.destination;
+        match self.accounts.get(&dest) {
+            // If we got an existing contract account, then we
+            Some(account) => {
+                if !account.code.is_empty() {
+                    let msg = msg.clone();
+                    let dest_contract = AnalyzedCode::analyze(account.code.as_ref());
+                    let mut local_self = self.clone();
+                    let output = dest_contract.execute(
+                        &mut local_self,
+                        &mut NoopTracer,
+                        None,
+                        msg.clone(),
+                        Revision::Istanbul,
+                    );
+                    self.call_result = output;
+                    if msg.is_static {
+                        dbg!("STATIC CALL", &msg);
+                        // For some reason, instead of returning the proper returndata,
+                        // this returns a gigantic slice of junk data which fails during the
+                        // decoding step.
+                        dbg!(&self.call_result);
+                    }
+                }
+            }
+            // contract creations are inserted into state with a nonce of 1
+            // TODO: Properly calculate address and code hash
+            None => {
+                if msg.destination == H160::zero() {
+                    let addr: H160 = "1111111111111111111111111111111111111111".parse().unwrap();
+                    let acc = Account {
+                        code: msg.input_data.clone(),
+                        code_hash:
+                            "1111111111111111111111111111111111111111111111111111111111111111"
+                                .parse()
+                                .unwrap(),
+                        nonce: 1,
+                        balance: msg.value,
+                        storage: Default::default(),
+                    };
+                    self.accounts.insert(addr, acc);
 
-        r.record_account_access(msg.destination);
-
-        if r.calls.len() < MAX_RECORDED_CALLS {
-            r.calls.push(msg.clone());
-            let call_msg = msg;
-            if !call_msg.input_data.is_empty() {
-                r.call_inputs.push(call_msg.input_data.clone());
+                    self.call_result = Output {
+                        status_code: StatusCode::Success,
+                        gas_left: 10_000_000,
+                        output_data: vec![].into(),
+                        create_address: Some(addr),
+                    };
+                }
             }
         }
+        // let mut r = self.recorded.lock();
+        //
+        // r.record_account_access(msg.destination);
+        //
+        // if r.calls.len() < MAX_RECORDED_CALLS {
+        //     r.calls.push(msg.clone());
+        //     let call_msg = msg;
+        //     if !call_msg.input_data.is_empty() {
+        //         r.call_inputs.push(call_msg.input_data.clone());
+        //     }
+        // }
         self.call_result.clone()
     }
 
